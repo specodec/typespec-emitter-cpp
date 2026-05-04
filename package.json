@@ -1,0 +1,18 @@
+{
+  "name": "@specodec/typespec-emitter-cpp",
+  "main": "dist/index.js",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@typespec/compiler": "^1.11.0",
+    "@specodec/typespec-emitter-core": "^0.1.0"
+  },
+  "scripts": {
+    "prepare": "npm run build",
+    "build": "tsc"
+  },
+  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
