@@ -1,5 +1,5 @@
 import { emitFile, } from "@typespec/compiler";
-import { collectServices, extractFields, scalarName, isArrayType, isRecordType, isModelType, arrayElementType, recordElementType, toPascalCase, toSnakeCase, checkAndReportReservedKeywords, } from "@specodec/typespec-emitter-core";
+import { collectServices, extractFields, scalarName, isArrayType, isRecordType, isModelType, arrayElementType, recordElementType, toSnakeCase, checkAndReportReservedKeywords, } from "@specodec/typespec-emitter-core";
 function typeToCpp(type) {
     if (isArrayType(type))
         return `std::vector<${typeToCpp(arrayElementType(type))}>`;
@@ -20,9 +20,6 @@ function typeToCpp(type) {
             case "uint32": return "std::uint32_t";
             case "uint64": return "std::uint64_t";
             case "float32": return "float";
-            case "float64":
-            case "float":
-            case "decimal": return "double";
             case "float64":
             case "float":
             case "decimal": return "double";
@@ -66,7 +63,7 @@ function writeExpr(expr, type, w) {
         const elem = arrayElementType(type);
         return [
             `\n        ${w}.beginArray(${expr}.size());`,
-            `for (const auto& _e : ${expr}) { ${w}.nextElement(); ${writeExpr("_e", elem, w)} }`,
+            `for (const auto& elem : ${expr}) { ${w}.nextElement(); ${writeExpr("elem", elem, w)} }`,
             `${w}.endArray()`,
         ].join("\n        ");
     }
@@ -74,15 +71,7 @@ function writeExpr(expr, type, w) {
         const elem = recordElementType(type);
         return [
             `\n        ${w}.beginObject(${expr}.size());`,
-            `for (const auto& [_k, _v] : ${expr}) { ${w}.writeField(_k); ${writeExpr("_v", elem, w)} }`,
-            `${w}.endObject()`,
-        ].join("\n        ");
-    }
-    if (isRecordType(type)) {
-        const elem = recordElementType(type);
-        return [
-            `${w}.beginObject(${expr}.size())`,
-            `for (const auto& [_k, _v] : ${expr}) { ${w}.writeField(_k); ${writeExpr("_v", elem, w)} }`,
+            `for (const auto& [key, val] : ${expr}) { ${w}.writeField(key); ${writeExpr("val", elem, w)} }`,
             `${w}.endObject()`,
         ].join("\n        ");
     }
@@ -108,7 +97,7 @@ function writeExpr(expr, type, w) {
         }
     }
     if (type.kind === "Model" && type.name)
-        return `_write${type.name}(${w}, ${expr});`;
+        return `write_${toSnakeCase(type.name)}(${w}, ${expr});`;
     return `// TODO: unknown type`;
 }
 function readExpr(type, r, optional) {
@@ -117,11 +106,11 @@ function readExpr(type, r, optional) {
         const cppFull = typeToCpp(type);
         return [
             `[&]() {`,
-            `    ${cppFull} _list;`,
+            `    ${cppFull} result;`,
             `    ${r}.beginArray();`,
-            `    while (${r}.hasNextElement()) { _list.push_back(${readExpr(elem, r)}); }`,
+            `    while (${r}.hasNextElement()) { result.push_back(${readExpr(elem, r)}); }`,
             `    ${r}.endArray();`,
-            `    return _list;`,
+            `    return result;`,
             `}()`
         ].join("\n");
     }
@@ -130,11 +119,11 @@ function readExpr(type, r, optional) {
         const cppFull = typeToCpp(type);
         return [
             `[&]() {`,
-            `    ${cppFull} _map;`,
+            `    ${cppFull} result;`,
             `    ${r}.beginObject();`,
-            `    while (${r}.hasNextField()) { auto _k = ${r}.readFieldName(); _map[_k] = ${readExpr(elem, r)}; }`,
+            `    while (${r}.hasNextField()) { auto key = ${r}.readFieldName(); result[key] = ${readExpr(elem, r)}; }`,
             `    ${r}.endObject();`,
-            `    return _map;`,
+            `    return result;`,
             `}()`
         ].join("\n");
     }
@@ -180,6 +169,7 @@ function generateModelCode(m, pkg) {
     const fields = extractFields(m);
     const optionalFields = fields.filter(f => f.optional);
     const requiredFields = fields.filter(f => !f.optional);
+    const snakeName = toSnakeCase(m.name);
     const lines = [];
     if (fields.length === 0) {
         lines.push(`export struct ${m.name} {};`);
@@ -197,14 +187,14 @@ function generateModelCode(m, pkg) {
         lines.push(`};`);
     }
     lines.push(``);
-    lines.push(`export inline void _write${m.name}(SpecWriter& w, const ${m.name}& obj) {`);
+    lines.push(`export inline void write_${snakeName}(specodec::SpecWriter& w, const ${m.name}& obj) {`);
     if (optionalFields.length > 0) {
-        lines.push(`    int _n = ${requiredFields.length};`);
+        lines.push(`    int field_count = ${requiredFields.length};`);
         for (const f of optionalFields) {
             const isSelfRef = isSelfReferencing(f.type, m.name);
-            lines.push(`    if (obj.${f.name}${isSelfRef ? ' != nullptr' : '.has_value()'}) _n++;`);
+            lines.push(`    if (obj.${f.name}${isSelfRef ? ' != nullptr' : '.has_value()'}) field_count++;`);
         }
-        lines.push(`    w.beginObject(_n);`);
+        lines.push(`    w.beginObject(field_count);`);
     }
     else {
         lines.push(`    w.beginObject(${fields.length});`);
@@ -226,43 +216,43 @@ function generateModelCode(m, pkg) {
     lines.push(`    w.endObject();`);
     lines.push(`}`);
     lines.push(``);
-    lines.push(`export inline SpecCodec<${m.name}> ${m.name}Codec = {`);
-    lines.push(`    .encode = [](SpecWriter& w, const ${m.name}& obj) { _write${m.name}(w, obj); },`);
-    lines.push(`    .decode = [](SpecReader& r) -> ${m.name} {`);
+    lines.push(`export inline specodec::SpecCodec<${m.name}> ${m.name}Codec = {`);
+    lines.push(`    .encode = [](specodec::SpecWriter& w, const ${m.name}& obj) { write_${snakeName}(w, obj); },`);
+    lines.push(`    .decode = [](specodec::SpecReader& r) -> ${m.name} {`);
     for (const f of fields) {
         if (f.optional) {
             const isSelfRef = isSelfReferencing(f.type, m.name);
             if (isSelfRef) {
-                lines.push(`        std::shared_ptr<${typeToCpp(f.type)}> _${f.name};`);
+                lines.push(`        std::shared_ptr<${typeToCpp(f.type)}> fld_${f.name};`);
             }
             else {
-                lines.push(`        std::optional<${typeToCpp(f.type)}> _${f.name};`);
+                lines.push(`        std::optional<${typeToCpp(f.type)}> fld_${f.name};`);
             }
         }
         else if (isModelType(f.type)) {
-            lines.push(`        ${typeToCpp(f.type)} _${f.name} = {};`);
+            lines.push(`        ${typeToCpp(f.type)} fld_${f.name} = {};`);
         }
         else {
-            lines.push(`        ${typeToCpp(f.type)} _${f.name} = ${defaultValue(f.type)};`);
+            lines.push(`        ${typeToCpp(f.type)} fld_${f.name} = ${defaultValue(f.type)};`);
         }
     }
     lines.push(`        r.beginObject();`);
     lines.push(`        while (r.hasNextField()) {`);
-    lines.push(`            auto _fn = r.readFieldName();`);
+    lines.push(`            auto field_name = r.readFieldName();`);
     for (let i = 0; i < fields.length; i++) {
         const f = fields[i];
         const prefix = i === 0 ? 'if' : 'else if';
         if (f.optional) {
             const isSelfRef = isSelfReferencing(f.type, m.name);
             if (isSelfRef) {
-                lines.push(`            ${prefix} (_fn == "${f.name}") { auto _opt = ${readExpr(f.type, "r", true)}; _${f.name} = _opt ? std::make_shared<${typeToCpp(f.type)}>(*_opt) : nullptr; }`);
+                lines.push(`            ${prefix} (field_name == "${f.name}") { auto opt = ${readExpr(f.type, "r", true)}; fld_${f.name} = opt ? std::make_shared<${typeToCpp(f.type)}>(*opt) : nullptr; }`);
             }
             else {
-                lines.push(`            ${prefix} (_fn == "${f.name}") { _${f.name} = std::optional<${typeToCpp(f.type)}>{${readExpr(f.type, "r", true)}}; }`);
+                lines.push(`            ${prefix} (field_name == "${f.name}") { fld_${f.name} = std::optional<${typeToCpp(f.type)}>{${readExpr(f.type, "r", true)}}; }`);
             }
         }
         else {
-            lines.push(`            ${prefix} (_fn == "${f.name}") { _${f.name} = ${readExpr(f.type, "r")}; }`);
+            lines.push(`            ${prefix} (field_name == "${f.name}") { fld_${f.name} = ${readExpr(f.type, "r")}; }`);
         }
     }
     if (fields.length > 0) {
@@ -270,11 +260,7 @@ function generateModelCode(m, pkg) {
     }
     lines.push(`        }`);
     lines.push(`        r.endObject();`);
-    const ctorArgs = fields.map(f => {
-        if (f.optional || isModelType(f.type))
-            return `_${f.name}`;
-        return `_${f.name}`;
-    }).join(", ");
+    const ctorArgs = fields.map(f => `fld_${f.name}`).join(", ");
     lines.push(`        return ${m.name}{${ctorArgs}};`);
     lines.push(`    }`);
     lines.push(`};`);
@@ -295,8 +281,6 @@ export async function $onEmit(context) {
         lines.push(`import std;`);
         lines.push(`import specodec;`);
         lines.push(``);
-        lines.push(`using namespace specodec;`);
-        lines.push(``);
         lines.push(`namespace ${pkg} {`);
         lines.push(``);
         for (const m of svc.models) {
@@ -306,7 +290,7 @@ export async function $onEmit(context) {
             lines.push(``);
         }
         lines.push(`} // namespace ${pkg}`);
-        const fileName = `${toPascalCase(toSnakeCase(svc.serviceName))}Types.cppm`;
+        const fileName = `${toSnakeCase(svc.serviceName)}_types.cppm`;
         await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
     }
 }
