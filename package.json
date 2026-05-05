@@ -5,7 +5,7 @@
   "type": "module",
   "dependencies": {
     "@typespec/compiler": "^1.11.0",
-    "@specodec/typespec-emitter-core": "^0.1.0"
+    "@specodec/typespec-emitter-core": "^0.1.1"
   },
   "scripts": {
     "prepare": "npm run build",
