@@ -281,6 +281,15 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     lines.push(`export module ${pkg};`);
     lines.push(`import std;`);
     lines.push(`import specodec;`);
+
+    // Import root namespace module for cross-namespace model references
+    const nsParts = svc.serviceName.split(".");
+    if (nsParts.length > 1) {
+      const rootPkg = dottedPathToSnakeCase(nsParts[0]);
+      lines.push(`import ${rootPkg};`);
+      lines.push(`using namespace ${rootPkg};`);
+    }
+
     lines.push(``);
     lines.push(`namespace ${pkg} {`);
     lines.push(``);
