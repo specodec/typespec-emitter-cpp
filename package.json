@@ -1,7 +1,7 @@
 {
   "name": "@specodec/typespec-emitter-cpp",
   "main": "dist/index.js",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "dependencies": {
     "@typespec/compiler": "^1.11.0",
