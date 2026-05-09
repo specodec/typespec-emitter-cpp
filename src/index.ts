@@ -1,22 +1,19 @@
-import {
-  EmitContext,
-  emitFile,
-  Model,
-  Type,
-} from "@typespec/compiler";
+import { type EmitContext, emitFile, type Model, type Type } from "@typespec/compiler";
 import {
   collectServices,
-  ServiceInfo,
-  BaseEmitterOptions,
-  FieldInfo,
+  type BaseEmitterOptions,
+  type FieldInfo,
+  type UnionInfo,
+  type UnionVariantInfo,
   extractFields,
   scalarName,
   isArrayType,
   isRecordType,
   isModelType,
+  isUnionType,
+  isScalarVariant,
   arrayElementType,
   recordElementType,
-  toPascalCase,
   toSnakeCase,
   dottedPathToSnakeCase,
   checkAndReportReservedKeywords,
@@ -25,27 +22,45 @@ import {
 export type EmitterOptions = BaseEmitterOptions;
 
 function typeToCpp(type: Type): string {
-  if (isArrayType(type)) return `std::vector<${typeToCpp(arrayElementType(type))}>`;
-  if (isRecordType(type)) return `std::map<std::string, ${typeToCpp(recordElementType(type))}>`;
+  if (isArrayType(type)) return `std::vector<${typeToCpp(arrayElementType(type)!)}>`;
+  if (isRecordType(type)) return `std::map<std::string, ${typeToCpp(recordElementType(type)!)}>`;
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return "std::string";
-      case "boolean": return "bool";
-      case "int8": return "std::int8_t";
-      case "int16": return "std::int16_t";
-      case "int32": case "integer": return "std::int32_t";
-      case "int64": return "std::int64_t";
-      case "uint8": return "std::uint8_t";
-      case "uint16": return "std::uint16_t";
-      case "uint32": return "std::uint32_t";
-      case "uint64": return "std::uint64_t";
-      case "float32": return "float";
-      case "float64": case "float": case "decimal": return "double";
-      case "bytes": return "std::vector<std::uint8_t>";
+      case "string":
+        return "std::string";
+      case "boolean":
+        return "bool";
+      case "int8":
+        return "std::int8_t";
+      case "int16":
+        return "std::int16_t";
+      case "int32":
+      case "integer":
+        return "std::int32_t";
+      case "int64":
+        return "std::int64_t";
+      case "uint8":
+        return "std::uint8_t";
+      case "uint16":
+        return "std::uint16_t";
+      case "uint32":
+        return "std::uint32_t";
+      case "uint64":
+        return "std::uint64_t";
+      case "float32":
+        return "float";
+      case "float64":
+      case "float":
+      case "decimal":
+        return "double";
+      case "bytes":
+        return "std::vector<std::uint8_t>";
     }
   }
+  if (type.kind === "Enum") return "std::string";
   if (type.kind === "Model") return (type as Model).name || "void";
+  if (type.kind === "Union" && (type as any).name) return (type as any).name;
   return "void";
 }
 
@@ -55,23 +70,40 @@ function defaultValue(type: Type): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return '""';
-      case "boolean": return "false";
-      case "int8": case "int16": case "int32": case "integer": return "0";
-      case "int64": return "0LL";
-      case "uint8": case "uint16": case "uint32": return "0u";
-      case "uint64": return "0ULL";
-      case "float32": return "0.0f";
-      case "float64": case "float": case "decimal": return "0.0";
-      case "bytes": return "{}";
+      case "string":
+        return '""';
+      case "boolean":
+        return "false";
+      case "int8":
+      case "int16":
+      case "int32":
+      case "integer":
+        return "0";
+      case "int64":
+        return "0LL";
+      case "uint8":
+      case "uint16":
+      case "uint32":
+        return "0u";
+      case "uint64":
+        return "0ULL";
+      case "float32":
+        return "0.0f";
+      case "float64":
+      case "float":
+      case "decimal":
+        return "0.0";
+      case "bytes":
+        return "{}";
     }
   }
+  if (type.kind === "Enum") return '"";';
   return "{}";
 }
 
 function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
-    const elem = arrayElementType(type);
+    const elem = arrayElementType(type)!;
     return [
       `\n        ${w}.beginArray(${expr}.size());`,
       `for (const auto& elem : ${expr}) { ${w}.nextElement(); ${writeExpr("elem", elem, w)} }`,
@@ -79,7 +111,7 @@ function writeExpr(expr: string, type: Type, w: string): string {
     ].join("\n        ");
   }
   if (isRecordType(type)) {
-    const elem = recordElementType(type);
+    const elem = recordElementType(type)!;
     return [
       `\n        ${w}.beginObject(${expr}.size());`,
       `for (const auto& [key, val] : ${expr}) { ${w}.writeField(key); ${writeExpr("val", elem, w)} }`,
@@ -89,26 +121,46 @@ function writeExpr(expr: string, type: Type, w: string): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return `${w}.writeString(${expr});`;
-      case "boolean": return `${w}.writeBool(${expr});`;
-      case "int8": case "int16": return `${w}.writeInt32(static_cast<std::int32_t>(${expr}));`;
-      case "int32": case "integer": return `${w}.writeInt32(${expr});`;
-      case "int64": return `${w}.writeInt64(${expr});`;
-      case "uint8": case "uint16": return `${w}.writeUint32(static_cast<std::uint32_t>(${expr}));`;
-      case "uint32": return `${w}.writeUint32(${expr});`;
-      case "uint64": return `${w}.writeUint64(${expr});`;
-      case "float32": return `${w}.writeFloat32(${expr});`;
-      case "float64": case "float": case "decimal": return `${w}.writeFloat64(${expr});`;
-      case "bytes": return `${w}.writeBytes(${expr});`;
+      case "string":
+        return `${w}.writeString(${expr});`;
+      case "boolean":
+        return `${w}.writeBool(${expr});`;
+      case "int8":
+      case "int16":
+        return `${w}.writeInt32(static_cast<std::int32_t>(${expr}));`;
+      case "int32":
+      case "integer":
+        return `${w}.writeInt32(${expr});`;
+      case "int64":
+        return `${w}.writeInt64(${expr});`;
+      case "uint8":
+      case "uint16":
+        return `${w}.writeUint32(static_cast<std::uint32_t>(${expr}));`;
+      case "uint32":
+        return `${w}.writeUint32(${expr});`;
+      case "uint64":
+        return `${w}.writeUint64(${expr});`;
+      case "float32":
+        return `${w}.writeFloat32(${expr});`;
+      case "float64":
+      case "float":
+      case "decimal":
+        return `${w}.writeFloat64(${expr});`;
+      case "bytes":
+        return `${w}.writeBytes(${expr});`;
     }
   }
-  if (type.kind === "Model" && (type as Model).name) return `write_${toSnakeCase((type as Model).name!)}(${w}, ${expr});`;
+  if (type.kind === "Enum") return `${w}.writeString(${expr});`;
+  if (type.kind === "Model" && (type as Model).name)
+    return `write_${toSnakeCase((type as Model).name!)}(${w}, ${expr});`;
+  if (type.kind === "Union" && (type as any).name)
+    return `write_${toSnakeCase((type as any).name)}(${w}, ${expr});`;
   return `// TODO: unknown type`;
 }
 
 function readExpr(type: Type, r: string, optional?: boolean): string {
   if (isArrayType(type)) {
-    const elem = arrayElementType(type);
+    const elem = arrayElementType(type)!;
     const cppFull = typeToCpp(type);
     return [
       `[&]() {`,
@@ -117,11 +169,11 @@ function readExpr(type: Type, r: string, optional?: boolean): string {
       `    while (${r}.hasNextElement()) { result.push_back(${readExpr(elem, r)}); }`,
       `    ${r}.endArray();`,
       `    return result;`,
-      `}()`
+      `}()`,
     ].join("\n");
   }
   if (isRecordType(type)) {
-    const elem = recordElementType(type);
+    const elem = recordElementType(type)!;
     const cppFull = typeToCpp(type);
     return [
       `[&]() {`,
@@ -130,30 +182,54 @@ function readExpr(type: Type, r: string, optional?: boolean): string {
       `    while (${r}.hasNextField()) { auto key = ${r}.readFieldName(); result[key] = ${readExpr(elem, r)}; }`,
       `    ${r}.endObject();`,
       `    return result;`,
-      `}()`
+      `}()`,
     ].join("\n");
   }
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return `${r}.readString()`;
-      case "boolean": return `${r}.readBool()`;
-      case "int8": return `static_cast<std::int8_t>(${r}.readInt32())`;
-      case "int16": return `static_cast<std::int16_t>(${r}.readInt32())`;
-      case "int32": case "integer": return `${r}.readInt32()`;
-      case "int64": return `${r}.readInt64()`;
-      case "uint8": return `static_cast<std::uint8_t>(${r}.readUint32())`;
-      case "uint16": return `static_cast<std::uint16_t>(${r}.readUint32())`;
-      case "uint32": return `${r}.readUint32()`;
-      case "uint64": return `${r}.readUint64()`;
-      case "float32": return `${r}.readFloat32()`;
-      case "float64": case "float": case "decimal": return `${r}.readFloat64()`;
-      case "bytes": return `${r}.readBytes()`;
+      case "string":
+        return `${r}.readString()`;
+      case "boolean":
+        return `${r}.readBool()`;
+      case "int8":
+        return `static_cast<std::int8_t>(${r}.readInt32())`;
+      case "int16":
+        return `static_cast<std::int16_t>(${r}.readInt32())`;
+      case "int32":
+      case "integer":
+        return `${r}.readInt32()`;
+      case "int64":
+        return `${r}.readInt64()`;
+      case "uint8":
+        return `static_cast<std::uint8_t>(${r}.readUint32())`;
+      case "uint16":
+        return `static_cast<std::uint16_t>(${r}.readUint32())`;
+      case "uint32":
+        return `${r}.readUint32()`;
+      case "uint64":
+        return `${r}.readUint64()`;
+      case "float32":
+        return `${r}.readFloat32()`;
+      case "float64":
+      case "float":
+      case "decimal":
+        return `${r}.readFloat64()`;
+      case "bytes":
+        return `${r}.readBytes()`;
     }
   }
+  if (type.kind === "Enum") return `${r}.readString()`;
   if (type.kind === "Model" && (type as Model).name) {
     const decodeCall = `${(type as Model).name}Codec.decode(${r})`;
-    if (optional) return `(${r}.isNull() ? (${r}.readNull(), std::optional<${(type as Model).name}>{std::nullopt}) : std::optional<${(type as Model).name}>{${decodeCall}})`;
+    if (optional)
+      return `(${r}.isNull() ? (${r}.readNull(), std::optional<${(type as Model).name}>{std::nullopt}) : std::optional<${(type as Model).name}>{${decodeCall}})`;
+    return decodeCall;
+  }
+  if (type.kind === "Union" && (type as any).name) {
+    const decodeCall = `${(type as any).name}Codec.decode(${r})`;
+    if (optional)
+      return `(${r}.isNull() ? (${r}.readNull(), std::optional<${(type as any).name}>{std::nullopt}) : std::optional<${(type as any).name}>{${decodeCall}})`;
     return decodeCall;
   }
   return `/* TODO */`;
@@ -170,11 +246,12 @@ function optionalWrapType(type: Type, parentName: string): string {
   return `std::optional<${typeToCpp(type)}>`;
 }
 
-function generateModelCode(m: Model, pkg: string): string {
+function generateModelCode(m: Model, _pkg: string): string {
   const fields = extractFields(m);
-  const optionalFields = fields.filter(f => f.optional);
-  const requiredFields = fields.filter(f => !f.optional);
+  const optionalFields = fields.filter((f) => f.optional);
+  const requiredFields = fields.filter((f) => !f.optional);
   const snakeName = toSnakeCase(m.name!);
+  const cppField = (f: FieldInfo) => `${toSnakeCase(f.name)}_`;
   const lines: string[] = [];
 
   if (fields.length === 0) {
@@ -183,9 +260,9 @@ function generateModelCode(m: Model, pkg: string): string {
     lines.push(`export struct ${m.name} {`);
     for (const f of fields) {
       if (f.optional) {
-        lines.push(`    ${optionalWrapType(f.type, m.name!)} ${f.name};`);
+        lines.push(`    ${optionalWrapType(f.type, m.name!)} ${cppField(f)};`);
       } else {
-        lines.push(`    ${typeToCpp(f.type)} ${f.name};`);
+        lines.push(`    ${typeToCpp(f.type)} ${cppField(f)};`);
       }
     }
     lines.push(`};`);
@@ -197,7 +274,7 @@ function generateModelCode(m: Model, pkg: string): string {
     lines.push(`    int field_count = ${requiredFields.length};`);
     for (const f of optionalFields) {
       const isSelfRef = isSelfReferencing(f.type, m.name!);
-      lines.push(`    if (obj.${f.name}${isSelfRef ? ' != nullptr' : '.has_value()'}) field_count++;`);
+      lines.push(`    if (obj.${cppField(f)}${isSelfRef ? " != nullptr" : ".has_value()"}) field_count++;`);
     }
     lines.push(`    w.beginObject(field_count);`);
   } else {
@@ -207,12 +284,16 @@ function generateModelCode(m: Model, pkg: string): string {
     if (f.optional) {
       const isSelfRef = isSelfReferencing(f.type, m.name!);
       if (isSelfRef) {
-        lines.push(`    if (obj.${f.name} != nullptr) { w.writeField("${f.name}"); ${writeExpr(`*obj.${f.name}`, f.type, "w")}; }`);
+        lines.push(
+          `    if (obj.${cppField(f)} != nullptr) { w.writeField("${f.name}"); ${writeExpr(`*obj.${cppField(f)}`, f.type, "w")}; }`,
+        );
       } else {
-        lines.push(`    if (obj.${f.name}.has_value()) { w.writeField("${f.name}"); ${writeExpr(`obj.${f.name}.value()`, f.type, "w")}; }`);
+        lines.push(
+          `    if (obj.${cppField(f)}.has_value()) { w.writeField("${f.name}"); ${writeExpr(`obj.${cppField(f)}.value()`, f.type, "w")}; }`,
+        );
       }
     } else {
-      lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${f.name}`, f.type, "w")};`);
+      lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${cppField(f)}`, f.type, "w")};`);
     }
   }
   lines.push(`    w.endObject();`);
@@ -223,17 +304,20 @@ function generateModelCode(m: Model, pkg: string): string {
   lines.push(`    .encode = [](specodec::SpecWriter& w, const ${m.name}& obj) { write_${snakeName}(w, obj); },`);
   lines.push(`    .decode = [](specodec::SpecReader& r) -> ${m.name} {`);
   for (const f of fields) {
+    const fld = toSnakeCase(f.name);
     if (f.optional) {
       const isSelfRef = isSelfReferencing(f.type, m.name!);
       if (isSelfRef) {
-        lines.push(`        std::shared_ptr<${typeToCpp(f.type)}> fld_${f.name};`);
+        lines.push(`        std::shared_ptr<${typeToCpp(f.type)}> fld_${fld};`);
       } else {
-        lines.push(`        std::optional<${typeToCpp(f.type)}> fld_${f.name};`);
+        lines.push(`        std::optional<${typeToCpp(f.type)}> fld_${fld};`);
       }
     } else if (isModelType(f.type)) {
-      lines.push(`        ${typeToCpp(f.type)} fld_${f.name} = {};`);
+      lines.push(`        ${typeToCpp(f.type)} fld_${fld} = {};`);
+    } else if (isUnionType(f.type)) {
+      lines.push(`        ${typeToCpp(f.type)} fld_${fld} = {};`);
     } else {
-      lines.push(`        ${typeToCpp(f.type)} fld_${f.name} = ${defaultValue(f.type)};`);
+      lines.push(`        ${typeToCpp(f.type)} fld_${fld} = ${defaultValue(f.type)};`);
     }
   }
   lines.push(`        r.beginObject();`);
@@ -241,16 +325,21 @@ function generateModelCode(m: Model, pkg: string): string {
   lines.push(`            auto field_name = r.readFieldName();`);
   for (let i = 0; i < fields.length; i++) {
     const f = fields[i];
-    const prefix = i === 0 ? 'if' : 'else if';
+    const fld = toSnakeCase(f.name);
+    const prefix = i === 0 ? "if" : "else if";
     if (f.optional) {
       const isSelfRef = isSelfReferencing(f.type, m.name!);
       if (isSelfRef) {
-        lines.push(`            ${prefix} (field_name == "${f.name}") { auto opt = ${readExpr(f.type, "r", true)}; fld_${f.name} = opt ? std::make_shared<${typeToCpp(f.type)}>(*opt) : nullptr; }`);
+        lines.push(
+          `            ${prefix} (field_name == "${f.name}") { auto opt = ${readExpr(f.type, "r", true)}; fld_${fld} = opt ? std::make_shared<${typeToCpp(f.type)}>(*opt) : nullptr; }`,
+        );
       } else {
-        lines.push(`            ${prefix} (field_name == "${f.name}") { fld_${f.name} = std::optional<${typeToCpp(f.type)}>{${readExpr(f.type, "r", true)}}; }`);
+        lines.push(
+          `            ${prefix} (field_name == "${f.name}") { fld_${fld} = std::optional<${typeToCpp(f.type)}>{${readExpr(f.type, "r", true)}}; }`,
+        );
       }
     } else {
-      lines.push(`            ${prefix} (field_name == "${f.name}") { fld_${f.name} = ${readExpr(f.type, "r")}; }`);
+      lines.push(`            ${prefix} (field_name == "${f.name}") { fld_${fld} = ${readExpr(f.type, "r")}; }`);
     }
   }
   if (fields.length > 0) {
@@ -258,13 +347,70 @@ function generateModelCode(m: Model, pkg: string): string {
   }
   lines.push(`        }`);
   lines.push(`        r.endObject();`);
-  const ctorArgs = fields.map(f => `fld_${f.name}`).join(", ");
+  const ctorArgs = fields.map((f) => `fld_${toSnakeCase(f.name)}`).join(", ");
   lines.push(`        return ${m.name}{${ctorArgs}};`);
   lines.push(`    }`);
   lines.push(`};`);
 
   return lines.join("\n");
 }
+
+function wrapperStructName(unionName: string, variantName: string): string {
+  return `${unionName}${variantName.charAt(0).toUpperCase() + variantName.slice(1)}`;
+}
+
+function generateUnionCode(u: UnionInfo, _pkg: string): string {
+  const snakeName = toSnakeCase(u.name);
+  const lines: string[] = [];
+
+  for (const v of u.variants) {
+    const wrapperName = wrapperStructName(u.name, v.name);
+    lines.push(`export struct ${wrapperName} { ${typeToCpp(v.type)} value; };`);
+  }
+  lines.push(``);
+
+  const wrapperNames = u.variants.map((v) => wrapperStructName(u.name, v.name));
+  lines.push(`export using ${u.name} = std::variant<specodec::Undefined, ${wrapperNames.join(", ")}>;`);
+  lines.push(``);
+
+  lines.push(`export inline void write_${snakeName}(specodec::SpecWriter& w, const ${u.name}& obj) {`);
+  lines.push(`    w.beginObject(1);`);
+  lines.push(`    std::visit([&w](const auto& val) {`);
+  for (let i = 0; i < u.variants.length; i++) {
+    const v = u.variants[i];
+    const wrapperName = wrapperStructName(u.name, v.name);
+    const kw = i === 0 ? "if" : "else if";
+    lines.push(`        ${kw} constexpr (std::is_same_v<std::decay_t<decltype(val)>, ${wrapperName}>) { w.writeField("${v.name}"); ${writeExpr("val.value", v.type, "w")}; }`);
+  }
+  lines.push(`        else if constexpr (std::is_same_v<std::decay_t<decltype(val)>, specodec::Undefined>) { throw std::runtime_error("cannot encode Undefined"); }`);
+  lines.push(`    }, obj);`);
+  lines.push(`    w.endObject();`);
+  lines.push(`}`);
+
+  lines.push(``);
+  lines.push(`export inline specodec::SpecCodec<${u.name}> ${u.name}Codec = {`);
+  lines.push(`    .encode = [](specodec::SpecWriter& w, const ${u.name}& obj) { write_${snakeName}(w, obj); },`);
+  lines.push(`    .decode = [](specodec::SpecReader& r) -> ${u.name} {`);
+  lines.push(`        r.beginObject();`);
+  lines.push(`        if (!r.hasNextField()) { r.endObject(); throw std::runtime_error("empty union ${u.name}"); }`);
+  lines.push(`        auto field_name = r.readFieldName();`);
+  lines.push(`        ${u.name} result;`);
+  for (let i = 0; i < u.variants.length; i++) {
+    const v = u.variants[i];
+    const wrapperName = wrapperStructName(u.name, v.name);
+    const kw = i === 0 ? "if" : "else if";
+    lines.push(`        ${kw} (field_name == "${v.name}") { result = ${wrapperName}{${readExpr(v.type, "r")}}; }`);
+  }
+  lines.push(`        else { throw std::runtime_error("unknown variant for union ${u.name}"); }`);
+  lines.push(`        while (r.hasNextField()) { r.readFieldName(); r.skip(); }`);
+  lines.push(`        r.endObject();`);
+  lines.push(`        return result;`);
+  lines.push(`    }`);
+  lines.push(`};`);
+
+  return lines.join("\n");
+}
+
 
 export async function $onEmit(context: EmitContext<EmitterOptions>) {
   const program = context.program;
@@ -296,6 +442,10 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     for (const m of svc.models) {
       if (!m.name) continue;
       lines.push(generateModelCode(m, pkg));
+      lines.push(``);
+    }
+    for (const u of svc.unions) {
+      lines.push(generateUnionCode(u, pkg));
       lines.push(``);
     }
     lines.push(`} // namespace ${pkg}`);
