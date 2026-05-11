@@ -409,14 +409,14 @@ export async function $onEmit(context) {
         lines.push(``);
         lines.push(`namespace ${pkg} {`);
         lines.push(``);
+        for (const u of svc.unions) {
+            lines.push(generateUnionCode(u, pkg));
+            lines.push(``);
+        }
         for (const m of svc.models) {
             if (!m.name)
                 continue;
             lines.push(generateModelCode(m, pkg));
-            lines.push(``);
-        }
-        for (const u of svc.unions) {
-            lines.push(generateUnionCode(u, pkg));
             lines.push(``);
         }
         lines.push(`} // namespace ${pkg}`);
